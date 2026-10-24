@@ -1124,6 +1124,21 @@
     },
     "data": {
       "location": "Location"
+    },
+    "customUpdate": {
+      "hint": "Updates preserve your menu bar style. Building locally may take a few minutes; failures keep the current version.",
+      "failed": "Custom update failed. The current version was kept.",
+      "stages": {
+        "checking": "Checking for updates…",
+        "fetching": "Fetching release source…",
+        "patching": "Preserving menu bar style…",
+        "dependencies": "Preparing build dependencies…",
+        "building": "Building the update; this may take a few minutes…",
+        "verifying": "Verifying application…",
+        "installing": "Backing up and installing…",
+        "done": "Restarting…",
+        "error": "Update failed"
+      }
     }
   },
   "apps": {

@@ -77,6 +77,10 @@ export const settingsApi = {
     return await invoke("install_update_and_restart");
   },
 
+  async customUpdateMode(): Promise<boolean> {
+    return await invoke("custom_update_mode");
+  },
+
   async checkUpdates(): Promise<void> {
     await invoke("check_for_updates");
   },

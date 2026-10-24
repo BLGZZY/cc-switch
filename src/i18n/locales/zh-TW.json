@@ -1125,6 +1125,21 @@
     },
     "data": {
       "location": "儲存位置"
+    },
+    "customUpdate": {
+      "hint": "更新時自動保留選單列樣式。本機建置通常需要幾分鐘；失敗時保留目前版本。",
+      "failed": "保留自訂樣式的更新失敗，目前版本已保留。",
+      "stages": {
+        "checking": "正在檢查更新…",
+        "fetching": "正在取得新版原始碼…",
+        "patching": "正在保留選單列樣式…",
+        "dependencies": "正在準備建置環境…",
+        "building": "正在建置新版，可能需要幾分鐘…",
+        "verifying": "正在驗證應用程式…",
+        "installing": "正在備份並安裝…",
+        "done": "正在重新啟動…",
+        "error": "更新失敗"
+      }
     }
   },
   "apps": {

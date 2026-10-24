@@ -9,6 +9,7 @@ mod coding_plan;
 mod config;
 mod copilot;
 mod custom_icon;
+mod custom_updater;
 mod deeplink;
 mod dsh;
 mod env;

@@ -1562,6 +1562,7 @@ pub fn run() {
             commands::set_log_config,
             commands::restart_app,
             commands::install_update_and_restart,
+            commands::custom_update_mode,
             commands::check_app_update_available,
             commands::check_for_updates,
             commands::open_portable_update_download,

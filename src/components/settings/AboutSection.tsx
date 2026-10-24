@@ -15,6 +15,7 @@ import { Button } from "@/components/ui/button";
 import { useTranslation } from "react-i18next";
 import { toast } from "@/lib/toast";
 import { getVersion } from "@tauri-apps/api/app";
+import { listen } from "@tauri-apps/api/event";
 import { settingsApi } from "@/lib/api";
 import { useUpdate } from "@/contexts/UpdateContext";
 import { Badge } from "@/components/ui/badge";
@@ -54,6 +55,8 @@ export function AboutSection({ isPortable }: AboutSectionProps) {
     () => appVersionCache === null,
   );
   const [isDownloading, setIsDownloading] = useState(false);
+  const [customUpdate, setCustomUpdate] = useState(false);
+  const [updateStage, setUpdateStage] = useState<string | null>(null);
   const [whatsNewOpen, setWhatsNewOpen] = useState(false);
   const [starPromptDismissed, setStarPromptDismissed] = useState(
     readStarPromptDismissed,
@@ -65,6 +68,29 @@ export function AboutSection({ isPortable }: AboutSectionProps) {
 
   const { hasUpdate, updateInfo, checkUpdate, resetDismiss, isChecking } =
     useUpdate();
+
+  useEffect(() => {
+    let active = true;
+    let unlisten: (() => void) | undefined;
+    void settingsApi
+      .customUpdateMode()
+      .then((enabled) => {
+        if (active) setCustomUpdate(enabled);
+      })
+      .catch(() => {});
+    void listen<{ stage: string }>("custom-update-progress", ({ payload }) => {
+      if (active) setUpdateStage(payload.stage);
+    })
+      .then((stop) => {
+        if (active) unlisten = stop;
+        else stop();
+      })
+      .catch(() => {});
+    return () => {
+      active = false;
+      unlisten?.();
+    };
+  }, []);
 
   useEffect(() => {
     let active = true;
@@ -145,6 +171,7 @@ export function AboutSection({ isPortable }: AboutSectionProps) {
       }
 
       setIsDownloading(true);
+      setUpdateStage(null);
       try {
         resetDismiss();
         const installed = await settingsApi.installUpdateAndRestart();
@@ -153,17 +180,29 @@ export function AboutSection({ isPortable }: AboutSectionProps) {
         }
       } catch (error) {
         console.error("[AboutSection] Update failed", error);
-        toast.error(t("settings.updateFailed"), {
-          description: extractErrorMessage(error) || undefined,
-          closeButton: true,
-        });
-        try {
-          await settingsApi.checkUpdates();
-        } catch (fallbackError) {
-          console.error(
-            "[AboutSection] Failed to open fallback updater",
-            fallbackError,
-          );
+        const preserveCustom =
+          customUpdate ||
+          (await settingsApi.customUpdateMode().catch(() => true));
+        toast.error(
+          t(
+            preserveCustom
+              ? "settings.customUpdate.failed"
+              : "settings.updateFailed",
+          ),
+          {
+            description: extractErrorMessage(error) || undefined,
+            closeButton: true,
+          },
+        );
+        if (!preserveCustom) {
+          try {
+            await settingsApi.checkUpdates();
+          } catch (fallbackError) {
+            console.error(
+              "[AboutSection] Failed to open fallback updater",
+              fallbackError,
+            );
+          }
         }
       } finally {
         setIsDownloading(false);
@@ -185,6 +224,7 @@ export function AboutSection({ isPortable }: AboutSectionProps) {
     }
   }, [
     checkUpdate,
+    customUpdate,
     hasUpdate,
     isPortable,
     resetDismiss,
@@ -232,7 +272,11 @@ export function AboutSection({ isPortable }: AboutSectionProps) {
           {isDownloading ? (
             <>
               <Loader2 className="h-3.5 w-3.5 animate-spin" />
-              {t("settings.updating")}
+              {customUpdate && updateStage
+                ? t(`settings.customUpdate.stages.${updateStage}`, {
+                    defaultValue: t("settings.updating"),
+                  })
+                : t("settings.updating")}
             </>
           ) : hasUpdate ? (
             <>
@@ -254,6 +298,12 @@ export function AboutSection({ isPortable }: AboutSectionProps) {
           )}
         </Button>
       </div>
+
+      {customUpdate && (
+        <p className="px-5 py-3 text-body text-fg-2" role="status">
+          {t("settings.customUpdate.hint")}
+        </p>
+      )}
 
       {hasUpdate && updateInfo && (
         <div className="space-y-1 px-5 py-4 text-body">

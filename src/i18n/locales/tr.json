@@ -1086,6 +1086,21 @@
     },
     "data": {
       "location": "Konum"
+    },
+    "customUpdate": {
+      "hint": "Güncellemeler menü çubuğu stilini korur. Yerel derleme birkaç dakika sürebilir; hata olursa mevcut sürüm korunur.",
+      "failed": "Özel güncelleme başarısız. Mevcut sürüm korundu.",
+      "stages": {
+        "checking": "Güncellemeler denetleniyor…",
+        "fetching": "Sürüm kaynak kodu alınıyor…",
+        "patching": "Menü çubuğu stili korunuyor…",
+        "dependencies": "Derleme ortamı hazırlanıyor…",
+        "building": "Derleniyor; bu işlem birkaç dakika sürebilir…",
+        "verifying": "Uygulama doğrulanıyor…",
+        "installing": "Yedekleniyor ve kuruluyor…",
+        "done": "Yeniden başlatılıyor…",
+        "error": "Güncelleme başarısız"
+      }
     }
   },
   "apps": {

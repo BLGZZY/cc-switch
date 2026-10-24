@@ -1,10 +1,13 @@
 #![allow(non_snake_case)]
 
-use tauri::{AppHandle, Emitter};
+use tauri::AppHandle;
+#[cfg(not(target_os = "macos"))]
+use tauri::Emitter;
 use tauri_plugin_updater::UpdaterExt;
 
 /// 应用更新下载进度（通过 `update-download-progress` 事件发给前端）。
 #[derive(Clone, serde::Serialize)]
+#[cfg(not(target_os = "macos"))]
 struct UpdateDownloadProgress {
     downloaded: u64,
     total: Option<u64>,
@@ -277,6 +280,23 @@ pub async fn restart_app(app: AppHandle) -> Result<bool, String> {
 /// 这里把退出清理、安装和重启串在同一个后端流程中，避免依赖旧前端继续执行。
 #[tauri::command]
 pub async fn install_update_and_restart(app: AppHandle) -> Result<bool, String> {
+    #[cfg(target_os = "macos")]
+    {
+        super::custom_updater::install(app).await
+    }
+    #[cfg(not(target_os = "macos"))]
+    {
+        install_official_update_and_restart(app).await
+    }
+}
+
+#[tauri::command]
+pub fn custom_update_mode() -> bool {
+    cfg!(target_os = "macos")
+}
+
+#[cfg(not(target_os = "macos"))]
+async fn install_official_update_and_restart(app: AppHandle) -> Result<bool, String> {
     let builder = app.updater_builder();
     // Windows 上 updater 以 `msiexec /passive /promptrestart` 安装 MSI。passive 没有模态框、
     // 未指定重启选项时，安装目录里有文件被占用，Windows Installer 会不经确认直接重启系统
