@@ -4,6 +4,7 @@ import io
 import json
 from pathlib import Path
 import plistlib
+import subprocess
 import tempfile
 import unittest
 from unittest.mock import patch
@@ -125,6 +126,49 @@ class UpdateTests(unittest.TestCase):
             with self.assertRaises(updater.UpdateError):
                 updater.version(value)
         self.assertGreater(updater.version("v4.0.20"), updater.version("4.0.9"))
+
+    def test_real_three_way_patch_preserves_new_upstream_changes(self):
+        repo = self.root / "source"
+        repo.mkdir()
+
+        def git(*args):
+            return subprocess.check_output(["git", "-c", "core.hooksPath=/dev/null", *args],
+                                           cwd=repo, stderr=subprocess.DEVNULL)
+
+        git("init", "-q")
+        git("config", "user.name", "Updater Test")
+        git("config", "user.email", "test@example.invalid")
+        git("config", "commit.gpgsign", "false")
+        (repo / "package.json").write_text('{"version":"4.0.20"}')
+        (repo / "README.md").write_text("old upstream\n")
+        git("add", ".")
+        git("commit", "-qm", "upstream base")
+        base = git("rev-parse", "HEAD").decode().strip()
+        git("checkout", "-qb", "custom")
+        files = {
+            "src-tauri/src/tray.rs": "const TRAY_TITLE_FONT_SIZE: f64 = 13.0;\n"
+                "const TRAY_TITLE_HORIZONTAL_PADDING: f64 = 4.0;\nfn style_tray_quota_title() {}\n",
+            "src-tauri/src/commands/settings.rs": "custom_updater::install(app)\n",
+            "src-tauri/tauri.conf.json": json.dumps({"bundle": {"resources": {"helper.py": "custom-updater.py"}}}),
+        }
+        for name, text in files.items():
+            path = repo / name
+            path.parent.mkdir(parents=True, exist_ok=True)
+            path.write_text(text)
+        icon = repo / "src-tauri/icons/tray/macos/statusbar_template_3x.png"
+        icon.parent.mkdir(parents=True)
+        icon.write_bytes(b"custom icon")
+        git("add", ".")
+        git("commit", "-qm", "customization")
+        custom_patch = git("diff", "--binary", base, "HEAD")
+        git("checkout", "--detach", base)
+        (repo / "package.json").write_text('{"version":"4.0.21"}')
+        (repo / "README.md").write_text("new upstream feature\n")
+        git("commit", "-qam", "new official release")
+        updater.command(["git", "apply", "--3way", "--index", "-"], cwd=repo, data=custom_patch)
+        updater.verify_customization(repo, updater.hashlib.sha256(b"custom icon").hexdigest())
+        self.assertEqual(json.loads((repo / "package.json").read_text())["version"], "4.0.21")
+        self.assertEqual((repo / "README.md").read_text(), "new upstream feature\n")
 
 
 if __name__ == "__main__":
