@@ -6,6 +6,43 @@
 
 补丁冲突、依赖缺失、构建或校验失败时停止；不会回退安装官方原版。源码工作区和账号配置不参与应用替换。安装失败会恢复原应用。新版本自身的运行兼容性仍需更新后检查。
 
+## 日常操作
+
+1. 打开 CC Switch → 设置 → 关于。
+2. 点“检查更新”。没有新版会提示“已是最新”；有新版会显示“更新到 v…”按钮。
+3. 点“更新到 v…”，等待获取源码、保留菜单栏样式、构建、校验、备份和安装完成。更新期间保持应用开启，完成后会自动重启。
+4. 若提示补丁冲突或构建失败，当前应用保持原样；错误信息会给出日志位置。需要适配时先修复定制分支、提交，再重试。
+
+## GitHub 备份与恢复
+
+定制源码保存于 <https://github.com/BLGZZY/cc-switch/tree/codex/macos-quota-tray>，分支是 `codex/macos-quota-tray`。GitHub 保存源码和操作说明，本机账号数据库、访问凭据、日志、构建产物和应用备份不纳入提交。
+
+本机以后修改定制代码并提交后，可用 `git push origin codex/macos-quota-tray` 继续备份。
+
+如需在另一台**已安装 CC Switch** 的 Mac 恢复，先准备 Git、Node、pnpm、Rust 和 Xcode Command Line Tools，再执行：
+
+```sh
+git clone --branch codex/macos-quota-tray https://github.com/BLGZZY/cc-switch.git "$HOME/cc-switch"
+cd "$HOME/cc-switch"
+/usr/bin/python3 - <<'PY'
+import json
+from pathlib import Path
+config = Path.home() / ".cc-switch/custom-updater.json"
+if config.exists():
+    raise SystemExit("已有更新配置，请先检查，避免覆盖。")
+config.parent.mkdir(parents=True, exist_ok=True)
+config.write_text(json.dumps({
+    "schema_version": 1,
+    "source_repo": str(Path.cwd()),
+    "base_ref": "85ad4969b3399500baaea9d46b1e08f87aba80e1",
+    "custom_ref": "refs/heads/codex/macos-quota-tray"
+}, indent=2) + "\n")
+config.chmod(0o600)
+PY
+```
+
+然后先退出 CC Switch，再执行 `/usr/bin/python3 scripts/custom_updater.py --rebuild`。构建安装完成后，从“应用程序”重新打开 CC Switch；以后即可使用内置更新按钮。
+
 ## 本机配置
 
 `~/.cc-switch/custom-updater.json` 指定 `source_repo`、`base_ref`（官方基线的完整 commit SHA）和 `custom_ref`（保存定制的本地分支引用）。只重放该分支已经提交的改动；当前定制分支有未提交的跟踪文件改动时停止更新。
