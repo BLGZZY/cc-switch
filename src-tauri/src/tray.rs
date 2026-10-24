@@ -2551,6 +2551,142 @@ fn tray_tooltip(texts: &TrayTexts, problems: &[TrayProblem]) -> String {
 /// 现在托盘上的（有没有圆点，悬停提示）；`None` = 托盘图标还没建好，还是建图标时的样子。
 static APPLIED_INDICATOR: Lazy<Mutex<Option<(bool, String)>>> = Lazy::new(|| Mutex::new(None));
 
+/// macOS：额度百分比标题（zhipumonitor 样式）当前是否挂在托盘上。标题在显示时健康态
+/// 隐藏放射状图标，菜单栏只剩文字。
+#[cfg(target_os = "macos")]
+static QUOTA_TITLE_ACTIVE: AtomicBool = AtomicBool::new(false);
+
+/// 菜单栏百分比比系统默认字号更醒目，宽度按实际文字计算，左右各留 2pt。
+#[cfg(target_os = "macos")]
+const TRAY_TITLE_FONT_SIZE: f64 = 13.0;
+#[cfg(target_os = "macos")]
+const TRAY_TITLE_FONT_WEIGHT: f64 = 0.23;
+#[cfg(target_os = "macos")]
+const TRAY_TITLE_HORIZONTAL_PADDING: f64 = 4.0;
+
+/// 直接取得本托盘的 NSStatusItem，在主线程设置字体和宽度。
+/// 不依赖系统私有窗口类名；每次标题/图标变化后重新测量，避免 9%/100% 被裁切。
+#[cfg(target_os = "macos")]
+fn style_tray_quota_title(app: &tauri::AppHandle) {
+    use objc2_06::{
+        msg_send,
+        rc::Retained,
+        runtime::{AnyClass, AnyObject},
+    };
+    use objc2_foundation_03::{NSSize, NSString};
+
+    let Some(tray) = app.tray_by_id(TRAY_ID) else {
+        return;
+    };
+    if let Err(error) = tray.with_inner_tray_icon(|inner| {
+        let Some(item) = inner.ns_status_item() else {
+            return;
+        };
+        // SAFETY: with_inner_tray_icon runs on the main thread. The retained
+        // status item and attributed string stay alive throughout these calls.
+        unsafe {
+            if !QUOTA_TITLE_ACTIVE.load(Ordering::Relaxed) {
+                let _: () = msg_send![&*item, setLength: -1.0f64];
+                return;
+            }
+            let button: *mut AnyObject = msg_send![&*item, button];
+            if button.is_null() {
+                return;
+            }
+            let (Some(font_cls), Some(dict_cls), Some(attributed_cls)) = (
+                AnyClass::get(c"NSFont"),
+                AnyClass::get(c"NSDictionary"),
+                AnyClass::get(c"NSAttributedString"),
+            ) else {
+                return;
+            };
+            let font: *mut AnyObject = msg_send![
+                font_cls,
+                monospacedDigitSystemFontOfSize: TRAY_TITLE_FONT_SIZE,
+                weight: TRAY_TITLE_FONT_WEIGHT
+            ];
+            if font.is_null() {
+                return;
+            }
+            let font_key = NSString::from_str("NSFont");
+            let attributes: *mut AnyObject = msg_send![
+                dict_cls, dictionaryWithObject: &*font, forKey: &*font_key
+            ];
+            let title: *mut AnyObject = msg_send![&*button, title];
+            if title.is_null() || attributes.is_null() {
+                return;
+            }
+            let allocated: *mut AnyObject = msg_send![attributed_cls, alloc];
+            if allocated.is_null() {
+                return;
+            }
+            let attributed: *mut AnyObject = msg_send![
+                allocated, initWithString: &*title, attributes: &*attributes
+            ];
+            let Some(attributed) = Retained::from_raw(attributed) else {
+                return;
+            };
+            let _: () = msg_send![&*button, setFont: &*font];
+            let _: () = msg_send![&*button, setAttributedTitle: &*attributed];
+            let text_size: NSSize = msg_send![&*attributed, size];
+            let image: *mut AnyObject = msg_send![&*button, image];
+            // 有异常图标时交还系统自动布局，保留图标和百分比的完整点击区域。
+            let width = if image.is_null() {
+                text_size.width.ceil() + TRAY_TITLE_HORIZONTAL_PADDING
+            } else {
+                -1.0
+            };
+            let _: () = msg_send![&*item, setLength: width];
+            log::debug!(
+                "[Tray] 额度标题布局：{}pt，文字 {:.1}pt，占位 {:.1}pt",
+                TRAY_TITLE_FONT_SIZE,
+                text_size.width,
+                width
+            );
+        }
+    }) {
+        log::warn!("[Tray] 设置额度标题布局失败: {error}");
+    }
+}
+
+/// 按当前状态落托盘图标的显隐：额度标题在显示且无异常时隐藏图标（zhipumonitor 样式，
+/// 菜单栏只剩文字），其余情况（没额度数据、有异常圆点）显示图标——圆点画在图标上，
+/// 纯文字表达不了。只在显隐形态变化时才真正 `set_icon`，避免闪烁。
+#[cfg(target_os = "macos")]
+fn apply_tray_icon_visibility(app: &tauri::AppHandle, has_dot: bool) {
+    static APPLIED_HIDDEN: AtomicBool = AtomicBool::new(false);
+    let hide = QUOTA_TITLE_ACTIVE.load(Ordering::Relaxed) && !has_dot;
+    if APPLIED_HIDDEN.swap(hide, Ordering::Relaxed) == hide {
+        return;
+    }
+    let Some(tray) = app.tray_by_id(TRAY_ID) else {
+        return;
+    };
+    if hide {
+        if let Err(e) = tray.set_icon(None) {
+            log::warn!("[Tray] 隐藏托盘图标失败: {e}");
+        }
+        return;
+    }
+    let Some((base, template)) = base_tray_icon(app) else {
+        return;
+    };
+    let icon = if has_dot {
+        icon_with_problem_dot(&base, template)
+    } else {
+        base
+    };
+    if let Err(e) = tray.set_icon(Some(icon)) {
+        log::warn!("[Tray] 恢复托盘图标失败: {e}");
+    }
+    // macOS 上 set_icon 会把模板标记清掉，要再设一次，否则深色菜单栏里是黑图标。
+    if template {
+        if let Err(e) = tray.set_icon_as_template(true) {
+            log::warn!("[Tray] 恢复模板图标标记失败: {e}");
+        }
+    }
+}
+
 /// 问题区有内容时托盘图标加圆点、悬停提示写第一条问题；问题都消失后换回原图标和提示。只在
 /// 变了时才动（Linux 每次换图标都要写临时文件）。
 fn update_problem_indicator(app: &tauri::AppHandle, texts: &TrayTexts, problems: &[TrayProblem]) {
@@ -2571,6 +2707,12 @@ fn update_problem_indicator(app: &tauri::AppHandle, texts: &TrayTexts, problems:
         changed
     };
     if icon_changed {
+        #[cfg(target_os = "macos")]
+        {
+            apply_tray_icon_visibility(app, has_dot);
+            style_tray_quota_title(app);
+        }
+        #[cfg(not(target_os = "macos"))]
         if let Some((base, template)) = base_tray_icon(app) {
             let icon = if has_dot {
                 icon_with_problem_dot(&base, template)
@@ -2604,6 +2746,12 @@ fn update_tray_usage_labels(app: &tauri::AppHandle) {
     }
     #[cfg(not(target_os = "linux"))]
     {
+        // macOS：菜单栏托盘 zhipumonitor 样式——只显示 5 小时额度已用百分比（如「19%」），
+        // 有文字时藏图标；无额度时清空标题、图标显回来。
+        #[cfg(target_os = "macos")]
+        if let Some(app_state) = app.try_state::<AppState>() {
+            update_tray_quota_title(app, app_state.inner());
+        }
         crate::tray_panel::notify_changed(app);
         // 出面板时托盘上没挂原生菜单，没有标题要改
         if !crate::tray_panel::uses_native_menu() {
@@ -2630,6 +2778,62 @@ fn update_tray_usage_labels(app: &tauri::AppHandle) {
             }
         }
     }
+}
+
+/// macOS 菜单栏托盘：zhipumonitor 样式，只显示 Claude 供应商里**有已缓存额度**的那家
+/// （通常就是 Zhipu 套餐卡）的 5 小时额度**已用**百分比（如「19%」），同时隐藏放射状图标；
+/// 查不到额度时清空标题、图标显回来（托盘不能整个消失）。
+/// 在用的不一定查得到额度（如 DeepSeek），所以按缓存兜底找。
+/// 只读 UsageCache，不触发任何请求。
+#[cfg(target_os = "macos")]
+fn update_tray_quota_title(app: &tauri::AppHandle, app_state: &AppState) {
+    let texts = TrayTexts::current();
+    let app_type = AppType::Claude;
+    let Ok(rows) = app_state.db.get_all_providers(app_type.as_str()) else {
+        return;
+    };
+    let mut title = None;
+    let mut scanned = 0usize;
+    for (_id, provider) in rows.iter() {
+        scanned += 1;
+        let source = tray_usage_source(&app_type, provider);
+        let Some(view) = cached_usage_view(
+            &app_state.usage_cache,
+            &texts,
+            &app_type,
+            provider.id.as_str(),
+            source.as_ref(),
+        ) else {
+            continue;
+        };
+        if let QuotaView::Lines(lines) = view {
+            let line = lines
+                .iter()
+                .find(|l| l.label == Some(texts.tier_five_hour))
+                .or_else(|| lines.first());
+            if let Some(line) = line {
+                title = Some(format!("{}%", (100.0 - line.left).round().max(0.0) as i64));
+                break;
+            }
+        }
+    }
+    log::info!(
+        "[Tray] 菜单栏额度标题 = {:?} (扫描 {} 家供应商)",
+        title,
+        scanned
+    );
+    QUOTA_TITLE_ACTIVE.store(title.is_some(), Ordering::Relaxed);
+    if let Some(tray) = app.tray_by_id(TRAY_ID) {
+        // tray-icon 在 None 时不会清除旧文字，必须显式写入空标题。
+        if let Err(e) = tray.set_title(Some(title.unwrap_or_default())) {
+            log::warn!("[Tray] 更新菜单栏额度标题失败: {e}");
+        }
+    }
+    let has_dot = lock(&APPLIED_INDICATOR)
+        .as_ref()
+        .is_some_and(|(dot, _)| *dot);
+    apply_tray_icon_visibility(app, has_dot);
+    style_tray_quota_title(app);
 }
 
 pub fn refresh_tray_menu(app: &tauri::AppHandle) {
