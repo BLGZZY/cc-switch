@@ -4,6 +4,7 @@ import io
 import json
 from pathlib import Path
 import plistlib
+import shutil
 import subprocess
 import tempfile
 import unittest
@@ -126,6 +127,151 @@ class UpdateTests(unittest.TestCase):
             with self.assertRaises(updater.UpdateError):
                 updater.version(value)
         self.assertGreater(updater.version("v4.0.20"), updater.version("4.0.9"))
+
+    def run_update_pipeline(self, *, prepare_only=False, fail_build=False,
+                            fail_install=False, fail_git_cleanup=False):
+        """Exercise update ordering and filesystem cleanup without downloading/building."""
+        repo = self.root / "source"
+        repo.mkdir()
+        # A developer's unrelated build cache must survive the updater.
+        cache = repo / "src-tauri/target/keep"
+        cache.parent.mkdir(parents=True)
+        cache.write_text("unrelated")
+        workspaces = []
+
+        def run(args, **kwargs):
+            if args[0] == "git":
+                if args[1:3] == ["rev-parse", "--verify"]:
+                    return b"b" * 40
+                if args[1:3] == ["rev-parse", "HEAD"]:
+                    return b"a" * 40
+                if args[1] == "rev-parse":
+                    return b"c" * 40
+                if args[1] == "diff":
+                    return b"custom patch"
+                if args[1] == "show":
+                    return b"icon"
+                if args[1:3] == ["worktree", "add"]:
+                    workspace = Path(args[4])
+                    workspace.mkdir()
+                    (workspace / "package.json").write_text('{"version":"4.0.21"}')
+                    workspaces.append(workspace)
+                if args[1:3] == ["worktree", "remove"]:
+                    if fail_git_cleanup:
+                        raise updater.UpdateError("simulated unregister failure")
+                    shutil.rmtree(args[4])
+            elif args[:2] == ["pnpm", "install"]:
+                (kwargs["cwd"] / "node_modules").mkdir()
+            elif args[:3] == ["pnpm", "tauri", "build"]:
+                workspace = kwargs["cwd"]
+                target = Path(kwargs["env"]["CARGO_TARGET_DIR"])
+                self.assertEqual(target, workspace / "src-tauri/target")
+                candidate = target / "release/bundle/macos/CC Switch.app"
+                fake_app(candidate, "new", "4.0.21")
+                helper = candidate / "Contents/Resources/custom-updater.py"
+                helper.parent.mkdir()
+                helper.write_text("helper")
+                (workspace / "dist").mkdir()
+                if fail_build:
+                    raise updater.UpdateError("simulated build failure")
+            else:
+                return self.copy_command(args)
+            return b""
+
+        def install(candidate, app, state, log):
+            if fail_install:
+                raise updater.UpdateError("simulated install failure")
+            return original_install(candidate, app, state, log)
+
+        def emit(stage, **extra):
+            if stage == "done":
+                self.assertTrue(workspaces)
+                self.assertFalse(workspaces[0].exists(), "Done must follow cleanup")
+
+        original_install = updater.install_candidate
+        with patch.object(updater, "command", side_effect=run), \
+                patch.object(updater, "verify_customization"), \
+                patch.object(updater.shutil, "which", return_value="/fake/tool"), \
+                patch.object(updater, "emit", side_effect=emit), \
+                patch.object(updater, "install_candidate", side_effect=install):
+            if fail_build or fail_install:
+                with self.assertRaisesRegex(updater.UpdateError, "simulated"):
+                    updater.update_locked(repo, "a" * 40, "refs/heads/custom",
+                                          self.state, self.app, False, prepare_only, "v4.0.21")
+            else:
+                updated = updater.update_locked(repo, "a" * 40, "refs/heads/custom",
+                                                self.state, self.app, False, prepare_only, "v4.0.21")
+                self.assertEqual(updated, not prepare_only)
+        self.assertFalse(workspaces[0].exists())
+        self.assertEqual(cache.read_text(), "unrelated")
+
+    def test_success_removes_build_and_dependencies_after_install(self):
+        self.run_update_pipeline()
+        self.assertEqual((self.app / "Contents/binary").read_text(), "new")
+        receipt = json.loads((self.state / "last-update.json").read_text())
+        self.assertEqual(receipt["cleanup_warnings"], [])
+        self.assertEqual((Path(receipt["backup"]) / "Contents/binary").read_text(), "old")
+
+    def test_prepare_only_keeps_only_verified_application(self):
+        self.run_update_pipeline(prepare_only=True)
+        self.assertEqual((self.app / "Contents/binary").read_text(), "old")
+        receipt = json.loads((self.state / "prepared.json").read_text())
+        candidate = Path(receipt["candidate"])
+        self.assertEqual((candidate / "Contents/binary").read_text(), "new")
+        self.assertTrue(candidate.is_relative_to(self.state / "prepared"))
+
+    def test_cleanup_warning_does_not_mark_installed_update_failed(self):
+        self.run_update_pipeline(fail_git_cleanup=True)
+        self.assertEqual((self.app / "Contents/binary").read_text(), "new")
+        receipt = json.loads((self.state / "last-update.json").read_text())
+        self.assertTrue(receipt["cleanup_warnings"])
+        self.assertIn("unregister failure", Path(receipt["log"]).read_text())
+
+    def test_build_failure_cleans_generated_files(self):
+        self.run_update_pipeline(fail_build=True)
+        self.assertEqual((self.app / "Contents/binary").read_text(), "old")
+
+    def test_install_failure_cleans_generated_files(self):
+        self.run_update_pipeline(fail_install=True)
+        self.assertEqual((self.app / "Contents/binary").read_text(), "old")
+
+    def test_cleanup_removes_files_even_when_git_unregister_fails(self):
+        workspace = self.state / "worktrees/run"
+        (workspace / "target").mkdir(parents=True)
+        log = self.state / "cleanup.log"
+        with patch.object(updater, "command", side_effect=updater.UpdateError("git failure")):
+            warnings = updater.cleanup_workspace(self.root, workspace, log)
+        self.assertFalse(workspace.exists())
+        self.assertTrue(warnings)
+        self.assertIn("git failure", log.read_text())
+
+    def test_cleanup_does_not_follow_replacement_symlink(self):
+        workspace = self.state / "worktree"
+        workspace.symlink_to(self.app, target_is_directory=True)
+        with patch.object(updater, "command") as run:
+            warnings = updater.cleanup_workspace(self.root, workspace, self.state / "cleanup.log")
+        run.assert_not_called()
+        self.assertTrue(warnings)
+        self.assertEqual((self.app / "Contents/binary").read_text(), "old")
+
+    def test_real_worktree_cleanup_removes_ignored_artifacts(self):
+        repo = self.root / "source"
+        repo.mkdir()
+        git = ["git", "-c", "core.hooksPath=/dev/null", "-C", str(repo)]
+        subprocess.run([*git, "init", "-q"], check=True)
+        subprocess.run([*git, "-c", "user.name=Test", "-c", "user.email=test@example.invalid",
+                        "-c", "commit.gpgsign=false", "commit", "--allow-empty", "-qm", "base"], check=True)
+        workspace = self.state / "worktree"
+        subprocess.run([*git, "worktree", "add", "--detach", str(workspace), "HEAD"],
+                       check=True, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
+        (workspace / ".gitignore").write_text("target/\nnode_modules/\ndist/\n")
+        for name in ["target", "node_modules", "dist"]:
+            (workspace / name).mkdir()
+            (workspace / name / "generated").write_bytes(b"generated")
+        self.assertEqual(updater.cleanup_workspace(repo, workspace, self.state / "cleanup.log"), [])
+        self.assertFalse(workspace.exists())
+        listing = subprocess.check_output([*git, "worktree", "list", "--porcelain"], text=True)
+        self.assertNotIn(str(workspace), listing)
 
     def test_real_three_way_patch_preserves_new_upstream_changes(self):
         repo = self.root / "source"

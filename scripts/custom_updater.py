@@ -131,6 +131,34 @@ def install_candidate(candidate, destination, state, log):
     return backup
 
 
+def cleanup_workspace(repo, workspace, log):
+    """Remove only this run's worktree, including its build output and dependencies.
+
+    Cleanup must not mask a build failure or report an already installed update as
+    failed. If Git cannot unregister the worktree, still remove its large files.
+    Never follow a replacement symlink into another checkout.
+    """
+    warnings = []
+    if workspace.is_symlink():
+        warnings.append("Refusing to clean a symlinked update workspace: " + str(workspace))
+    else:
+        try:
+            command(["git", "worktree", "remove", "--force", str(workspace)],
+                    cwd=repo, log=log, timeout=120)
+        except (UpdateError, OSError, subprocess.TimeoutExpired) as error:
+            warnings.append("Could not unregister update workspace: " + str(error))
+        if workspace.exists():
+            try:
+                shutil.rmtree(workspace)
+            except OSError as error:
+                warnings.append("Could not remove update files: " + str(error))
+    if warnings:
+        with contextlib.suppress(OSError):
+            with log.open("a") as stream:
+                stream.write("\nCleanup warnings:\n" + "\n".join(warnings) + "\n")
+    return warnings
+
+
 def update(config_path, app, *, rebuild=False, prepare_only=False, target_tag=None):
     config = json.loads(config_path.read_text())
     repo = Path(config["source_repo"]).expanduser().resolve()
@@ -198,10 +226,11 @@ def update_locked(repo, base, custom, state, app, rebuild, prepare_only, target_
         declared = json.loads((workspace / "package.json").read_text())["version"]
         if version(declared) != target:
             raise UpdateError("Release tag and source version do not match")
+        # Keep all generated files in the disposable worktree. Never delete or
+        # reuse build output belonging to the user's source checkout.
+        env["CARGO_TARGET_DIR"] = str(workspace / "src-tauri/target")
         emit("dependencies")
         command(["pnpm", "install", "--frozen-lockfile"], cwd=workspace, log=log, env=env, timeout=600)
-        # Reuse Rust artifacts instead of consuming another full target directory.
-        env["CARGO_TARGET_DIR"] = str(repo / "src-tauri/target")
         emit("building")
         command(["pnpm", "tauri", "build", "--bundles", "app", "--config",
                  '{"bundle":{"createUpdaterArtifacts":false}}', "--", "--locked"],
@@ -218,22 +247,40 @@ def update_locked(repo, base, custom, state, app, rebuild, prepare_only, target_
         receipt = dict(version=declared, upstream_commit=upstream_commit,
                        custom_commit=custom_commit, patch_sha256=patch_digest, log=str(log))
         if prepare_only:
-            atomic_json(state / "prepared.json", dict(receipt, candidate=str(candidate)))
-            emit("done", updated=False, prepared=True, candidate=str(candidate))
-            return False
-        if version(app_version(app)) != version(installed):
-            raise UpdateError("The installed app changed while building; update stopped")
-        emit("installing")
-        backup = install_candidate(candidate, app, state, log)
-        with contextlib.suppress(OSError):
-            atomic_json(state / "last-update.json", dict(receipt, backup=str(backup)))
-        emit("done", updated=True, version=declared, backup=str(backup))
-        return True
+            # Keep only the verified deliverable, not gigabytes of compiler cache.
+            prepared_dir = state / "prepared" / run_id
+            prepared_dir.mkdir(parents=True)
+            prepared_app = prepared_dir / "CC Switch.app"
+            try:
+                command(["/usr/bin/ditto", str(candidate), str(prepared_app)], log=log)
+                command(["/usr/bin/codesign", "--verify", "--deep", str(prepared_app)], log=log)
+                if version(app_version(prepared_app)) != target:
+                    raise UpdateError("Prepared application version does not match the release")
+            except BaseException:
+                shutil.rmtree(prepared_dir)
+                raise
+            receipt_path = state / "prepared.json"
+            receipt["candidate"] = str(prepared_app)
+            completion = dict(updated=False, prepared=True, candidate=str(prepared_app))
+        else:
+            if version(app_version(app)) != version(installed):
+                raise UpdateError("The installed app changed while building; update stopped")
+            emit("installing")
+            backup = install_candidate(candidate, app, state, log)
+            receipt_path = state / "last-update.json"
+            receipt["backup"] = str(backup)
+            completion = dict(updated=True, version=declared, backup=str(backup))
     finally:
+        cleanup_warnings = []
         if added:
-            # This directory is exclusively created by this run; no user checkout is removed.
-            subprocess.run(["git", "worktree", "remove", "--force", str(workspace)], cwd=repo,
-                           stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
+            cleanup_warnings = cleanup_workspace(repo, workspace, log)
+    receipt["cleanup_warnings"] = cleanup_warnings
+    with contextlib.suppress(OSError):
+        atomic_json(receipt_path, receipt)
+    # The UI restarts only after cleanup has finished, with success kept distinct
+    # from a best-effort cleanup warning recorded in the log and receipt.
+    emit("done", **completion, cleanup_warnings=cleanup_warnings)
+    return completion["updated"]
 
 
 def main():
