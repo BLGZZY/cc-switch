@@ -313,30 +313,33 @@ describe("UsageDashboard", () => {
     );
   });
 
-  it("filters usage queries to an app from its icon chip", async () => {
+  it.each([
+    ["Pi", "pi"],
+    ["ZCode", "zcode"],
+  ])("filters usage queries from the %s chip", async (name, appType) => {
     const user = userEvent.setup();
     renderDashboard();
 
-    await user.click(screen.getByRole("button", { name: "Pi" }));
+    await user.click(screen.getByRole("button", { name }));
 
     await waitFor(() =>
       expect(useProviderStatsMock).toHaveBeenLastCalledWith(
         expect.anything(),
-        { appType: "pi" },
+        { appType },
         expect.anything(),
       ),
     );
     expect(useModelStatsMock).toHaveBeenLastCalledWith(
       expect.anything(),
-      { appType: "pi", providerName: undefined },
+      { appType, providerName: undefined },
       expect.anything(),
     );
     expect(usageHeroMock).toHaveBeenLastCalledWith(
-      expect.objectContaining({ appType: "pi" }),
+      expect.objectContaining({ appType }),
     );
     // 芯片只有图标，名字由 aria-label 提供
     expect(
-      screen.getByRole("button", { name: "Pi", pressed: true }),
+      screen.getByRole("button", { name, pressed: true }),
     ).toBeInTheDocument();
   });
 

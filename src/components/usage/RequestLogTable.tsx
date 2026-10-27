@@ -12,7 +12,7 @@ import { useRequestLogs } from "@/lib/query/usage";
 import { TablePagination } from "./TablePagination";
 import { HelpTip } from "@/components/ui/help-tip";
 import { AppGlyph, APP_DISPLAY_NAME } from "@/components/shell/AppGlyph";
-import type { AppId } from "@/lib/api";
+import type { DisplayAppId } from "@/components/shell/AppGlyph";
 import {
   CACHE_INCLUSIVE_APP_TYPES,
   getFreshInputTokens,
@@ -98,7 +98,7 @@ export function formatLogFullTime(createdAt: number): string {
   )}`;
 }
 
-export function isKnownAppId(appType: string): appType is AppId {
+export function isKnownAppId(appType: string): appType is DisplayAppId {
   return appType in APP_DISPLAY_NAME;
 }
 
@@ -110,7 +110,7 @@ export function appDisplayName(appType: string): string {
  * 请求日志「应用」列用的短名：图标已经区分了品牌（Claude Code / Desktop 靠角标），
  * 列里只留最短能认出的名字，把宽度让给供应商列。全名在悬停提示里。
  */
-const APP_SHORT_NAME: Record<AppId, string> = {
+const APP_SHORT_NAME: Record<DisplayAppId, string> = {
   claude: "Claude",
   "claude-desktop": "Desktop",
   codex: "Codex",
@@ -125,6 +125,7 @@ const APP_SHORT_NAME: Record<AppId, string> = {
   dsh: "DSH",
   agy: "Antigravity",
   omp: "omp",
+  zcode: "ZCode",
 };
 
 export function appShortName(appType: string): string {

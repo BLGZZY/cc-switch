@@ -564,6 +564,7 @@ export function UsageDashboard({
     const visible = { ...DEFAULT_VISIBLE_APPS, ...settings?.visibleApps };
     return KNOWN_APP_TYPES.filter(
       (app) =>
+        app === "zcode" ||
         visible[app] ||
         (app === "claude" && visible["claude-desktop"]) ||
         app === appType,

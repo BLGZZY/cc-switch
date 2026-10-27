@@ -1,13 +1,13 @@
 import type { TFunction } from "i18next";
 import { APP_DISPLAY_NAME } from "@/components/shell/AppGlyph";
-import type { AppId } from "@/lib/api";
+import type { DisplayAppId } from "@/components/shell/AppGlyph";
 
 /**
  * 后端给会话日志导入的用量返回的占位供应商名（`usage_stats.rs` 的
  * `provider_name_coalesce`）。这些名字同时是供应商筛选的取值，原样回传后端
  * 精确匹配，所以只在显示时翻译，不能改动传给后端的值。
  */
-const SESSION_PROVIDER_APPS: Record<string, AppId> = {
+const SESSION_PROVIDER_APPS: Record<string, DisplayAppId> = {
   "Claude (Session)": "claude",
   "Codex (Session)": "codex",
   "Gemini (Session)": "gemini",
@@ -17,6 +17,7 @@ const SESSION_PROVIDER_APPS: Record<string, AppId> = {
   "Kimi Code (Session)": "kimi",
   "Pi (Session)": "pi",
   "Oh My Pi (Session)": "omp",
+  "ZCode (Session)": "zcode",
   "Antigravity (Session)": "agy",
   "DeepSeek Harness (Session)": "dsh",
 };
@@ -25,7 +26,7 @@ const SESSION_PROVIDER_APPS: Record<string, AppId> = {
  * 同样来自会话日志、但能认出走的是官方账号登录（OAuth）的占位名。
  * DeepSeek Harness 的 Web 与 Desktop 共用一份 DeepSeek 账号登录，用量合并记在 dsh 下。
  */
-const SESSION_ACCOUNT_PROVIDER_APPS: Record<string, AppId> = {
+const SESSION_ACCOUNT_PROVIDER_APPS: Record<string, DisplayAppId> = {
   "DeepSeek Harness (OAuth)": "dsh",
 };
 
