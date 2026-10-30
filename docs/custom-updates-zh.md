@@ -34,7 +34,7 @@ config.parent.mkdir(parents=True, exist_ok=True)
 config.write_text(json.dumps({
     "schema_version": 1,
     "source_repo": str(Path.cwd()),
-    "base_ref": "85ad4969b3399500baaea9d46b1e08f87aba80e1",
+    "base_ref": "b76426741ef93069e2f374ac01ca7ef5760e1d0e",
     "custom_ref": "refs/heads/codex/macos-quota-tray"
 }, indent=2) + "\n")
 config.chmod(0o600)
